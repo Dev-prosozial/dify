@@ -35,3 +35,10 @@ class EndUserDetail(ResponseModel):
     session_id: str
     created_at: datetime
     updated_at: datetime
+
+
+class EndUserDataSummaryResponse(ResponseModel):
+    end_user_id: UUIDString
+    conversation_count: int
+    message_count: int
+    upload_file_count: int

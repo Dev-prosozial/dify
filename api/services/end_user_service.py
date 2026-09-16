@@ -1,14 +1,22 @@
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 
-from sqlalchemy import case, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import sessionmaker
 
 from extensions.ext_database import db
-from models.enums import EndUserType
-from models.model import App, DefaultEndUserSessionID, EndUser
+from models.enums import CreatorUserRole, EndUserType
+from models.model import App, Conversation, DefaultEndUserSessionID, EndUser, Message, UploadFile
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EndUserDataSummary:
+    conversation_count: int
+    message_count: int
+    upload_file_count: int
 
 
 class EndUserService:
@@ -31,6 +39,28 @@ class EndUserService:
                     EndUser.id == end_user_id,
                     EndUser.tenant_id == tenant_id,
                     EndUser.app_id == app_id,
+                )
+                .limit(1)
+            )
+
+    @classmethod
+    def get_end_user_by_external_id(cls, *, tenant_id: str, app_id: str, external_user_id: str) -> EndUser | None:
+        """Get an end user by external user ID.
+
+        Matches the identity a backend passes to other service API calls as
+        `user`. The column is not indexed and is kept equal to `session_id`,
+        so we query by `session_id` which is indexed and scoped to the provided
+        tenant and app to prevent cross-tenant/app access.
+        """
+
+        with sessionmaker(bind=db.engine, expire_on_commit=False).begin() as session:
+            return session.scalar(
+                select(EndUser)
+                .where(
+                    EndUser.tenant_id == tenant_id,
+                    EndUser.app_id == app_id,
+                    EndUser.session_id == external_user_id,
+                    EndUser.type != EndUserType.APP_DEPLOY,
                 )
                 .limit(1)
             )
@@ -182,3 +212,46 @@ class EndUserService:
                     result[eu.app_id] = eu
 
         return result
+
+    @classmethod
+    def get_data_summary(cls, app_model: App, end_user: EndUser) -> EndUserDataSummary:
+        """Count the data owned by a single end user in a given app.
+
+        The conversation and message counts are scoped by `app_id` and
+        `from_end_user_id` and are served by existing indexes. The upload file
+        count is scoped by `created_by`/`created_by_role`; `created_by` is not
+        indexed, so it performs a sequential scan (an accepted v1 limitation).
+        """
+
+        with sessionmaker(bind=db.engine, expire_on_commit=False).begin() as session:
+            conversation_count = session.scalar(
+                select(func.count())
+                .select_from(Conversation)
+                .where(
+                    Conversation.app_id == app_model.id,
+                    Conversation.from_end_user_id == end_user.id,
+                    Conversation.is_deleted.is_(False),
+                )
+            )
+            message_count = session.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(
+                    Message.app_id == app_model.id,
+                    Message.from_end_user_id == end_user.id,
+                )
+            )
+            upload_file_count = session.scalar(
+                select(func.count())
+                .select_from(UploadFile)
+                .where(
+                    UploadFile.created_by == end_user.id,
+                    UploadFile.created_by_role == CreatorUserRole.END_USER,
+                )
+            )
+
+        return EndUserDataSummary(
+            conversation_count=conversation_count or 0,
+            message_count=message_count or 0,
+            upload_file_count=upload_file_count or 0,
+        )

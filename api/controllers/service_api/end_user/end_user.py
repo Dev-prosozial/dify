@@ -1,16 +1,18 @@
 from uuid import UUID
 
+from flask import request
 from flask_restx import Resource
+from werkzeug.exceptions import BadRequest
 
 from controllers.common.schema import register_response_schema_models
 from controllers.service_api import service_api_ns
 from controllers.service_api.end_user.error import EndUserNotFoundError
 from controllers.service_api.wraps import validate_app_token
-from fields.end_user_fields import EndUserDetail
+from fields.end_user_fields import EndUserDataSummaryResponse, EndUserDetail
 from models.model import App
 from services.end_user_service import EndUserService
 
-register_response_schema_models(service_api_ns, EndUserDetail)
+register_response_schema_models(service_api_ns, EndUserDetail, EndUserDataSummaryResponse)
 
 
 @service_api_ns.route("/end-users/<uuid:end_user_id>")
@@ -55,3 +57,64 @@ class EndUserApi(Resource):
             raise EndUserNotFoundError()
 
         return EndUserDetail.model_validate(end_user).model_dump(mode="json")
+
+
+@service_api_ns.route("/end-users")
+class EndUserSummaryApi(Resource):
+    """Resource for retrieving an end user's data summary by external user ID."""
+
+    @service_api_ns.doc(
+        summary="Get End User Data Summary",
+        description=(
+            "Retrieve the data summary (conversation, message and uploaded file counts) for an end "
+            "user of the current app, identified by the external `user` ID. Read-only: does not "
+            "create or delete any data."
+        ),
+        tags=["End Users"],
+        responses={
+            200: "End user data summary retrieved successfully.",
+            400: "`bad_request` : Query parameter `user` is required.",
+            404: "`end_user_not_found` : End user not found.",
+        },
+    )
+    @service_api_ns.doc("get_end_user_data_summary")
+    @service_api_ns.doc(description="Get an end user's data summary by external user ID")
+    @service_api_ns.doc(
+        params={"user": "External user ID identifying the end user within the current app."},
+        responses={
+            200: "End user data summary retrieved successfully",
+            400: "Bad request - query parameter `user` is required",
+            401: "Unauthorized - invalid API token",
+            404: "End user not found",
+        },
+    )
+    @service_api_ns.response(
+        200, "End user data summary retrieved successfully", service_api_ns.models[EndUserDataSummaryResponse.__name__]
+    )
+    @validate_app_token
+    def get(self, app_model: App):
+        """Get an end user's data summary.
+
+        Read-only endpoint. Unlike other service API calls it does not use
+        `fetch_user_arg`, so a missing end user is not auto-created and a
+        non-resolvable ID returns 404 instead.
+        """
+
+        external_user_id = request.args.get("user")
+        if not external_user_id:
+            raise BadRequest("Query parameter 'user' is required.")
+
+        end_user = EndUserService.get_end_user_by_external_id(
+            tenant_id=app_model.tenant_id, app_id=app_model.id, external_user_id=external_user_id
+        )
+        if end_user is None:
+            raise EndUserNotFoundError()
+
+        summary = EndUserService.get_data_summary(app_model, end_user)
+        response = EndUserDataSummaryResponse(
+            end_user_id=end_user.id,
+            conversation_count=summary.conversation_count,
+            message_count=summary.message_count,
+            upload_file_count=summary.upload_file_count,
+        )
+        return response.model_dump(mode="json")
