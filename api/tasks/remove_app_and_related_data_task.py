@@ -1,6 +1,6 @@
 import logging
 import time
-from collections.abc import Callable
+from functools import partial
 from typing import Any, cast
 
 import click
@@ -16,6 +16,9 @@ from core.db.session_factory import session_factory
 from enums import DeploymentEdition
 from extensions.ext_database import db
 from libs.archive_storage import ArchiveStorageNotConfiguredError, get_archive_storage
+from libs.batch_sql_delete import batch_delete_by_query as _batch_delete_by_query
+
+batch_delete_by_query = partial(_batch_delete_by_query, session_factory=session_factory.create_session)
 from models import (
     ApiToken,
     AppAnnotationHitHistory,
@@ -110,7 +113,7 @@ def _delete_app_model_configs(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_model_configs where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_model_config,
@@ -122,7 +125,7 @@ def _delete_app_site(tenant_id: str, app_id: str):
     def del_site(session, site_id: str):
         session.execute(delete(Site).where(Site.id == site_id).execution_options(synchronize_session=False))
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from sites where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_site,
@@ -136,7 +139,7 @@ def _delete_app_mcp_servers(tenant_id: str, app_id: str):
             delete(AppMCPServer).where(AppMCPServer.id == mcp_server_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_mcp_servers where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_mcp_server,
@@ -156,7 +159,7 @@ def _delete_app_api_tokens(tenant_id: str, app_id: str):
             delete(ApiToken).where(ApiToken.id == api_token_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from api_tokens where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_api_token,
@@ -170,7 +173,7 @@ def _delete_installed_apps(tenant_id: str, app_id: str):
             delete(InstalledApp).where(InstalledApp.id == installed_app_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from installed_apps where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_installed_app,
@@ -182,7 +185,7 @@ def _delete_app_stars(tenant_id: str, app_id: str):
     def del_app_star(session, app_star_id: str):
         session.execute(delete(AppStar).where(AppStar.id == app_star_id).execution_options(synchronize_session=False))
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_stars where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_app_star,
@@ -198,7 +201,7 @@ def _delete_recommended_apps(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from recommended_apps where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_recommended_app,
@@ -214,7 +217,7 @@ def _delete_app_annotation_data(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_annotation_hit_histories where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_annotation_hit_history,
@@ -228,7 +231,7 @@ def _delete_app_annotation_data(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_annotation_settings where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_annotation_setting,
@@ -244,7 +247,7 @@ def _delete_app_dataset_joins(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_dataset_joins where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_dataset_join,
@@ -256,7 +259,7 @@ def _delete_app_workflows(tenant_id: str, app_id: str):
     def del_workflow(session, workflow_id: str):
         session.execute(delete(Workflow).where(Workflow.id == workflow_id).execution_options(synchronize_session=False))
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflows where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_workflow,
@@ -311,7 +314,7 @@ def _delete_app_workflow_app_logs(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_app_logs where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_workflow_app_log,
@@ -327,7 +330,7 @@ def _delete_app_workflow_archive_logs(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_archive_logs where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_workflow_archive_log,
@@ -371,7 +374,7 @@ def _delete_app_conversations(tenant_id: str, app_id: str):
             delete(Conversation).where(Conversation.id == conversation_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from conversations where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_conversation,
@@ -419,7 +422,7 @@ def _delete_app_messages(tenant_id: str, app_id: str):
         )
         session.execute(delete(Message).where(Message.id == message_id).execution_options(synchronize_session=False))
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from messages where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_message,
@@ -435,7 +438,7 @@ def _delete_workflow_tool_providers(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from tool_workflow_providers where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_tool_provider,
@@ -449,7 +452,7 @@ def _delete_app_tag_bindings(tenant_id: str, app_id: str):
             delete(TagBinding).where(TagBinding.id == tag_binding_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from tag_bindings where tenant_id=:tenant_id and target_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_tag_binding,
@@ -461,7 +464,7 @@ def _delete_end_users(tenant_id: str, app_id: str):
     def del_end_user(session, end_user_id: str):
         session.execute(delete(EndUser).where(EndUser.id == end_user_id).execution_options(synchronize_session=False))
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from end_users where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_end_user,
@@ -477,7 +480,7 @@ def _delete_trace_app_configs(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from trace_app_config where app_id=:app_id limit 1000""",
         {"app_id": app_id},
         del_trace_app_config,
@@ -635,7 +638,7 @@ def _delete_app_triggers(tenant_id: str, app_id: str):
             delete(AppTrigger).where(AppTrigger.id == trigger_id).execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from app_triggers where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_app_trigger,
@@ -651,7 +654,7 @@ def _delete_workflow_plugin_triggers(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_plugin_triggers where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_plugin_trigger,
@@ -667,7 +670,7 @@ def _delete_workflow_webhook_triggers(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_webhook_triggers where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_webhook_trigger,
@@ -683,7 +686,7 @@ def _delete_workflow_schedule_plans(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_schedule_plans where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_schedule_plan,
@@ -699,45 +702,9 @@ def _delete_workflow_trigger_logs(tenant_id: str, app_id: str):
             .execution_options(synchronize_session=False)
         )
 
-    _delete_records(
+    batch_delete_by_query(
         """select id from workflow_trigger_logs where tenant_id=:tenant_id and app_id=:app_id limit 1000""",
         {"tenant_id": tenant_id, "app_id": app_id},
         del_trigger_log,
         "workflow trigger log",
     )
-
-
-def _delete_records(query_sql: str, params: dict[str, Any], delete_func: Callable, name: str) -> None:
-    while True:
-        with session_factory.create_session() as session:
-            rs = session.execute(sa.text(query_sql), params)
-            rows = rs.fetchall()
-            if not rows:
-                break
-
-            success_count = 0
-            for i in rows:
-                record_id = str(i.id)
-                try:
-                    delete_func(session, record_id)
-                    logger.info(click.style(f"Deleted {name} {record_id}", fg="green"))
-                    session.commit()
-                    success_count += 1
-                except Exception:
-                    logger.exception("Error occurred while deleting %s %s", name, record_id)
-                    # continue with next record even if one deletion fails
-                    session.rollback()
-                    continue
-
-            rs.close()
-
-            # If we couldn't delete ANY records in this batch, we must break out of the while loop
-            # to prevent an infinite loop where we keep fetching the same failing records.
-            if success_count == 0:
-                logger.warning(
-                    click.style(
-                        f"Failed to delete any {name} in the current batch. Stopping to prevent infinite loop.",
-                        fg="yellow",
-                    )
-                )
-                break

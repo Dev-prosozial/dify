@@ -2,14 +2,21 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from extensions.ext_database import db
 from models.enums import CreatorUserRole, EndUserType
 from models.model import App, Conversation, DefaultEndUserSessionID, EndUser, Message, UploadFile
+from tasks.delete_conversation_task import delete_conversation_related_data
+from tasks.delete_end_user_data_task import delete_end_user_upload_files
 
 logger = logging.getLogger(__name__)
+
+# Conversations at or below this count are dispatched for physical cleanup
+# per-conversation. Above it we rely on the periodic sweeper to avoid
+# flooding the broker with tasks for very large histories.
+_HYBRID_ENQUEUE_THRESHOLD = 200
 
 
 @dataclass
@@ -17,6 +24,11 @@ class EndUserDataSummary:
     conversation_count: int
     message_count: int
     upload_file_count: int
+
+
+@dataclass
+class EndUserDeletionResult:
+    conversations_marked: int
 
 
 class EndUserService:
@@ -255,3 +267,56 @@ class EndUserService:
             message_count=message_count or 0,
             upload_file_count=upload_file_count or 0,
         )
+
+    @classmethod
+    def delete_all_data(cls, app_model: App, end_user: EndUser) -> EndUserDeletionResult:
+        """Soft-delete all conversations of an end user and enqueue physical cleanup.
+
+        The ``EndUser`` row itself is preserved (only its owned data is removed).
+        Conversations are soft-deleted (``is_deleted=True``) immediately; physical
+        cleanup runs asynchronously via Celery. The caller is responsible for
+        guarding against the shared anonymous/`DEFAULT-USER` sentinel before
+        invoking this method.
+        """
+
+        with sessionmaker(bind=db.engine, expire_on_commit=False).begin() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(
+                    Conversation.app_id == app_model.id,
+                    Conversation.from_end_user_id == end_user.id,
+                    Conversation.is_deleted.is_(False),
+                )
+                .values(is_deleted=True)
+                .returning(Conversation.id)
+            )
+            conversation_ids = [row[0] for row in result]
+
+        cls._dispatch_conversation_cleanup(conversation_ids)
+
+        try:
+            delete_end_user_upload_files.delay(app_model.tenant_id, end_user.id)
+        except Exception:
+            logger.exception("Failed to enqueue upload file cleanup for end user %s", end_user.id)
+
+        return EndUserDeletionResult(conversations_marked=len(conversation_ids))
+
+    @classmethod
+    def _dispatch_conversation_cleanup(cls, conversation_ids: list[str]) -> None:
+        """Dispatch physical cleanup for a bounded set of soft-deleted conversations."""
+        if len(conversation_ids) > _HYBRID_ENQUEUE_THRESHOLD:
+            # The periodic sweeper re-enqueues soft-deleted conversations, so a
+            # broker outage or very large history must not resurrect them.
+            logger.info(
+                "Skipping per-conversation dispatch for %s conversations; relying on periodic sweeper.",
+                len(conversation_ids),
+            )
+            return
+
+        for conversation_id in conversation_ids:
+            try:
+                delete_conversation_related_data.delay(conversation_id)
+            except Exception:
+                # The soft-deleted row is a durable cleanup marker picked up by
+                # the periodic sweeper, so a broker outage is non-fatal here.
+                logger.exception("Failed to enqueue cleanup for conversation %s", conversation_id)

@@ -7,7 +7,7 @@ from pytest_mock import MockerFixture
 
 from models.enums import CreatorUserRole, EndUserType
 from models.model import App, EndUser
-from services.end_user_service import EndUserDataSummary, EndUserService
+from services.end_user_service import EndUserDataSummary, EndUserDeletionResult, EndUserService
 
 
 class TestEndUserServiceLookup:
@@ -125,6 +125,97 @@ class TestEndUserServiceDataSummary:
         result = EndUserService.get_data_summary(app, end_user)
 
         assert result == EndUserDataSummary(conversation_count=0, message_count=0, upload_file_count=0)
+
+
+class TestEndUserServiceDelete:
+    def test_delete_all_data_dispatches_cleanup_below_threshold(self, mocker: MockerFixture) -> None:
+        app = App(id="app-1", tenant_id="tenant-1")
+        end_user = EndUser(
+            id="end-user-1",
+            tenant_id="tenant-1",
+            app_id="app-1",
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-1",
+            session_id="external-1",
+        )
+
+        session = MagicMock()
+        session.execute.return_value = [("c1",), ("c2",)]
+
+        def begin():
+            return _BeginCtx(session)
+
+        dispatch = mocker.patch.object(EndUserService, "_dispatch_conversation_cleanup")
+        upload_task = mocker.patch("services.end_user_service.delete_end_user_upload_files")
+
+        mocker.patch("services.end_user_service.db", MagicMock())
+        mocker.patch(
+            "services.end_user_service.sessionmaker",
+            return_value=MagicMock(begin=begin),
+        )
+
+        result = EndUserService.delete_all_data(app, end_user)
+
+        assert result == EndUserDeletionResult(conversations_marked=2)
+        dispatch.assert_called_once_with(["c1", "c2"])
+        upload_task.delay.assert_called_once_with(app.tenant_id, end_user.id)
+        statement = str(session.execute.call_args.args[0])
+        assert "conversations" in statement
+
+    def test_delete_all_data_enqueues_upload_task(self, mocker: MockerFixture) -> None:
+        app = App(id="app-1", tenant_id="tenant-1")
+        end_user = EndUser(
+            id="end-user-1",
+            tenant_id="tenant-1",
+            app_id="app-1",
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-1",
+            session_id="external-1",
+        )
+
+        session = MagicMock()
+        session.execute.return_value = []
+
+        def begin():
+            return _BeginCtx(session)
+
+        mocker.patch.object(EndUserService, "_dispatch_conversation_cleanup")
+        upload_task = mocker.patch("services.end_user_service.delete_end_user_upload_files")
+        mocker.patch("services.end_user_service.db", MagicMock())
+        mocker.patch(
+            "services.end_user_service.sessionmaker",
+            return_value=MagicMock(begin=begin),
+        )
+
+        result = EndUserService.delete_all_data(app, end_user)
+
+        assert result.conversations_marked == 0
+        upload_task.delay.assert_called_once_with(app.tenant_id, end_user.id)
+
+    def test_dispatch_skips_when_above_threshold(self, mocker: MockerFixture) -> None:
+        conversation_task = mocker.patch("services.end_user_service.delete_conversation_related_data")
+        many_ids = [f"c-{i}" for i in range(201)]
+
+        EndUserService._dispatch_conversation_cleanup(many_ids)
+
+        conversation_task.delay.assert_not_called()
+
+    def test_dispatch_enqueues_each_below_threshold(self, mocker: MockerFixture) -> None:
+        conversation_task = mocker.patch("services.end_user_service.delete_conversation_related_data")
+        ids = ["c1", "c2", "c3"]
+
+        EndUserService._dispatch_conversation_cleanup(ids)
+
+        assert conversation_task.delay.call_count == 3
+        conversation_task.delay.assert_has_calls([mocker.call("c1"), mocker.call("c2"), mocker.call("c3")])
+
+    def test_dispatch_tolerates_enqueue_failure(self, mocker: MockerFixture) -> None:
+        conversation_task = mocker.patch("services.end_user_service.delete_conversation_related_data")
+        conversation_task.delay.side_effect = RuntimeError("broker down")
+
+        EndUserService._dispatch_conversation_cleanup(["c1", "c2"])
+
+        assert conversation_task.delay.call_count == 2
 
 
 class _BeginCtx:

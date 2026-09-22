@@ -42,3 +42,8 @@ class EndUserDataSummaryResponse(ResponseModel):
     conversation_count: int
     message_count: int
     upload_file_count: int
+
+
+class EndUserDeletionResponse(ResponseModel):
+    end_user_id: UUIDString
+    conversations_marked: int

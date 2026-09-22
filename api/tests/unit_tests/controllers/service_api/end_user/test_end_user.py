@@ -8,8 +8,8 @@ from pytest_mock import MockerFixture
 from controllers.service_api.end_user.end_user import EndUserApi, EndUserSummaryApi
 from controllers.service_api.end_user.error import EndUserNotFoundError
 from models.enums import EndUserType
-from models.model import App, EndUser
-from services.end_user_service import EndUserDataSummary
+from models.model import App, DefaultEndUserSessionID, EndUser
+from services.end_user_service import EndUserDataSummary, EndUserDeletionResult
 
 
 class TestEndUserApi:
@@ -140,3 +140,81 @@ class TestEndUserSummaryApi:
         with app.test_request_context("/end-users"):
             with pytest.raises(BadRequest):
                 EndUserSummaryApi.get.__wrapped__(resource, app_model=app_model)
+
+    def test_delete_marks_conversations_and_returns_202(
+        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App
+    ) -> None:
+        end_user = EndUser(
+            id=str(uuid4()),
+            tenant_id=app_model.tenant_id,
+            app_id=app_model.id,
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-123",
+            name="Alice",
+            _is_anonymous=True,
+            session_id="external-123",
+        )
+
+        get_end_user = mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id",
+            return_value=end_user,
+        )
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.delete_all_data",
+            return_value=EndUserDeletionResult(conversations_marked=7),
+        )
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "external-123"}):
+            body, status = EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
+
+        get_end_user.assert_called_once_with(
+            tenant_id=app_model.tenant_id, app_id=app_model.id, external_user_id="external-123"
+        )
+        assert status == 202
+        assert body == {"end_user_id": end_user.id, "conversations_marked": 7}
+
+    def test_delete_not_found(self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App) -> None:
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id", return_value=None
+        )
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "missing-user"}):
+            with pytest.raises(EndUserNotFoundError):
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
+
+    def test_delete_anonymous_sentinel_raises_bad_request(
+        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App
+    ) -> None:
+        from werkzeug.exceptions import BadRequest
+
+        end_user = EndUser(
+            id=str(uuid4()),
+            tenant_id=app_model.tenant_id,
+            app_id=app_model.id,
+            type=EndUserType.SERVICE_API,
+            external_user_id=DefaultEndUserSessionID.DEFAULT_SESSION_ID,
+            _is_anonymous=True,
+            session_id=DefaultEndUserSessionID.DEFAULT_SESSION_ID,
+        )
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id",
+            return_value=end_user,
+        )
+        delete_all_data = mocker.patch("controllers.service_api.end_user.end_user.EndUserService.delete_all_data")
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "DEFAULT-USER"}):
+            with pytest.raises(BadRequest):
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
+
+        delete_all_data.assert_not_called()
+
+    def test_delete_missing_user_raises_bad_request(self, resource: EndUserSummaryApi, app_model: App) -> None:
+        from werkzeug.exceptions import BadRequest
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users"):
+            with pytest.raises(BadRequest):
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)

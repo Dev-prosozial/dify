@@ -170,7 +170,7 @@ class TestDeleteDraftVariableOffloadData:
 
 class TestDeleteWorkflowArchiveLogs:
     @pytest.mark.parametrize("sqlite_session", [(WorkflowArchiveLog,)], indirect=True)
-    @patch("tasks.remove_app_and_related_data_task._delete_records")
+    @patch("tasks.remove_app_and_related_data_task.batch_delete_by_query")
     @patch("tasks.remove_app_and_related_data_task.db")
     def test_delete_app_workflow_archive_logs_calls_delete_records(
         self, mock_db, mock_delete_records, sqlite_session: Session
@@ -220,7 +220,7 @@ class TestDeleteWorkflowArchiveLogs:
 
 class TestDeleteAppStars:
     @pytest.mark.parametrize("sqlite_session", [(AppStar,)], indirect=True)
-    @patch("tasks.remove_app_and_related_data_task._delete_records")
+    @patch("tasks.remove_app_and_related_data_task.batch_delete_by_query")
     def test_delete_app_stars_calls_delete_records(self, mock_delete_records, sqlite_session: Session):
         tenant_id = "tenant-1"
         app_id = "app-1"
