@@ -6,6 +6,7 @@ from typing import Annotated
 from pydantic import Field, WithJsonSchema
 
 from fields.base import ResponseModel
+from services.end_user_service import EndUserDataType
 
 UUIDString = Annotated[str, WithJsonSchema({"format": "uuid", "type": "string"})]
 
@@ -46,4 +47,5 @@ class EndUserDataSummaryResponse(ResponseModel):
 
 class EndUserDeletionResponse(ResponseModel):
     end_user_id: UUIDString
+    data_type: EndUserDataType
     conversations_marked: int

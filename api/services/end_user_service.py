@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import sessionmaker
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 # per-conversation. Above it we rely on the periodic sweeper to avoid
 # flooding the broker with tasks for very large histories.
 _HYBRID_ENQUEUE_THRESHOLD = 200
+
+
+class EndUserDataType(StrEnum):
+    ALL = "all"
+    UPLOAD_FILES = "upload_files"
+    CONVERSATIONS = "conversations"
 
 
 @dataclass
@@ -269,35 +276,39 @@ class EndUserService:
         )
 
     @classmethod
-    def delete_all_data(cls, app_model: App, end_user: EndUser) -> EndUserDeletionResult:
-        """Soft-delete all conversations of an end user and enqueue physical cleanup.
+    def delete_all_data(cls, app_model: App, end_user: EndUser, data_type: EndUserDataType) -> EndUserDeletionResult:
+        """Delete a subset of an end user's data and enqueue physical cleanup.
 
         The ``EndUser`` row itself is preserved (only its owned data is removed).
-        Conversations are soft-deleted (``is_deleted=True``) immediately; physical
-        cleanup runs asynchronously via Celery. The caller is responsible for
-        guarding against the shared anonymous/`DEFAULT-USER` sentinel before
-        invoking this method.
+        ``data_type`` selects which data is deleted: conversations only, upload
+        files only, or both. Conversations are soft-deleted (``is_deleted=True``)
+        immediately; physical cleanup runs asynchronously via Celery. The caller
+        is responsible for guarding against the shared anonymous/`DEFAULT-USER`
+        sentinel before invoking this method.
         """
 
-        with sessionmaker(bind=db.engine, expire_on_commit=False).begin() as session:
-            result = session.execute(
-                update(Conversation)
-                .where(
-                    Conversation.app_id == app_model.id,
-                    Conversation.from_end_user_id == end_user.id,
-                    Conversation.is_deleted.is_(False),
+        conversation_ids: list[str] = []
+        if data_type in (EndUserDataType.ALL, EndUserDataType.CONVERSATIONS):
+            with sessionmaker(bind=db.engine, expire_on_commit=False).begin() as session:
+                result = session.execute(
+                    update(Conversation)
+                    .where(
+                        Conversation.app_id == app_model.id,
+                        Conversation.from_end_user_id == end_user.id,
+                        Conversation.is_deleted.is_(False),
+                    )
+                    .values(is_deleted=True)
+                    .returning(Conversation.id)
                 )
-                .values(is_deleted=True)
-                .returning(Conversation.id)
-            )
-            conversation_ids = [row[0] for row in result]
+                conversation_ids = [row[0] for row in result]
 
-        cls._dispatch_conversation_cleanup(conversation_ids)
+            cls._dispatch_conversation_cleanup(conversation_ids)
 
-        try:
-            delete_end_user_upload_files.delay(app_model.tenant_id, end_user.id)
-        except Exception:
-            logger.exception("Failed to enqueue upload file cleanup for end user %s", end_user.id)
+        if data_type in (EndUserDataType.ALL, EndUserDataType.UPLOAD_FILES):
+            try:
+                delete_end_user_upload_files.delay(app_model.tenant_id, end_user.id)
+            except Exception:
+                logger.exception("Failed to enqueue upload file cleanup for end user %s", end_user.id)
 
         return EndUserDeletionResult(conversations_marked=len(conversation_ids))
 

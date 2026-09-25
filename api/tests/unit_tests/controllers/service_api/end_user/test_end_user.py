@@ -9,7 +9,7 @@ from controllers.service_api.end_user.end_user import EndUserApi, EndUserSummary
 from controllers.service_api.end_user.error import EndUserNotFoundError
 from models.enums import EndUserType
 from models.model import App, DefaultEndUserSessionID, EndUser
-from services.end_user_service import EndUserDataSummary, EndUserDeletionResult
+from services.end_user_service import EndUserDataSummary, EndUserDataType, EndUserDeletionResult
 
 
 class TestEndUserApi:
@@ -159,33 +159,25 @@ class TestEndUserSummaryApi:
             "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id",
             return_value=end_user,
         )
-        mocker.patch(
+        delete_all_data = mocker.patch(
             "controllers.service_api.end_user.end_user.EndUserService.delete_all_data",
             return_value=EndUserDeletionResult(conversations_marked=7),
         )
 
         app = Flask(__name__)
-        with app.test_request_context("/end-users", query_string={"user": "external-123"}):
+        with app.test_request_context("/end-users", query_string={"user": "external-123", "data_type": "all"}):
             body, status = EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
 
         get_end_user.assert_called_once_with(
             tenant_id=app_model.tenant_id, app_id=app_model.id, external_user_id="external-123"
         )
+        delete_all_data.assert_called_once_with(app_model, end_user, EndUserDataType.ALL)
         assert status == 202
-        assert body == {"end_user_id": end_user.id, "conversations_marked": 7}
+        assert body == {"end_user_id": end_user.id, "data_type": "all", "conversations_marked": 7}
 
-    def test_delete_not_found(self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App) -> None:
-        mocker.patch(
-            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id", return_value=None
-        )
-
-        app = Flask(__name__)
-        with app.test_request_context("/end-users", query_string={"user": "missing-user"}):
-            with pytest.raises(EndUserNotFoundError):
-                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
-
+    @pytest.mark.parametrize("data_type", ["all", "upload_files", "conversations"])
     def test_delete_anonymous_sentinel_raises_bad_request(
-        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App
+        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App, data_type: str
     ) -> None:
         from werkzeug.exceptions import BadRequest
 
@@ -205,11 +197,83 @@ class TestEndUserSummaryApi:
         delete_all_data = mocker.patch("controllers.service_api.end_user.end_user.EndUserService.delete_all_data")
 
         app = Flask(__name__)
-        with app.test_request_context("/end-users", query_string={"user": "DEFAULT-USER"}):
+        with app.test_request_context(
+            "/end-users", query_string={"user": "DEFAULT-USER", "data_type": data_type}
+        ):
             with pytest.raises(BadRequest):
                 EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
 
         delete_all_data.assert_not_called()
+
+    def test_delete_missing_data_type_raises_bad_request(
+        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App
+    ) -> None:
+        from werkzeug.exceptions import BadRequest
+
+        end_user = EndUser(
+            id=str(uuid4()),
+            tenant_id=app_model.tenant_id,
+            app_id=app_model.id,
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-123",
+            _is_anonymous=True,
+            session_id="external-123",
+        )
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id",
+            return_value=end_user,
+        )
+        delete_all_data = mocker.patch("controllers.service_api.end_user.end_user.EndUserService.delete_all_data")
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "external-123"}):
+            with pytest.raises(BadRequest):
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
+
+        delete_all_data.assert_not_called()
+
+    def test_delete_invalid_data_type_raises_bad_request(
+        self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App
+    ) -> None:
+        from werkzeug.exceptions import BadRequest
+
+        end_user = EndUser(
+            id=str(uuid4()),
+            tenant_id=app_model.tenant_id,
+            app_id=app_model.id,
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-123",
+            _is_anonymous=True,
+            session_id="external-123",
+        )
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id",
+            return_value=end_user,
+        )
+        delete_all_data = mocker.patch("controllers.service_api.end_user.end_user.EndUserService.delete_all_data")
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "external-123", "data_type": "files"}):
+            with pytest.raises(BadRequest) as exc:
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
+
+        delete_all_data.assert_not_called()
+        message = str(exc.value)
+        assert "data_type" in message
+        assert "files" in message
+        assert "all" in message
+        assert "upload_files" in message
+        assert "conversations" in message
+
+    def test_delete_not_found(self, mocker: MockerFixture, resource: EndUserSummaryApi, app_model: App) -> None:
+        mocker.patch(
+            "controllers.service_api.end_user.end_user.EndUserService.get_end_user_by_external_id", return_value=None
+        )
+
+        app = Flask(__name__)
+        with app.test_request_context("/end-users", query_string={"user": "missing-user", "data_type": "all"}):
+            with pytest.raises(EndUserNotFoundError):
+                EndUserSummaryApi.delete.__wrapped__(resource, app_model=app_model)
 
     def test_delete_missing_user_raises_bad_request(self, resource: EndUserSummaryApi, app_model: App) -> None:
         from werkzeug.exceptions import BadRequest

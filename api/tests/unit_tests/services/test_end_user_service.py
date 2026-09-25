@@ -7,7 +7,7 @@ from pytest_mock import MockerFixture
 
 from models.enums import CreatorUserRole, EndUserType
 from models.model import App, EndUser
-from services.end_user_service import EndUserDataSummary, EndUserDeletionResult, EndUserService
+from services.end_user_service import EndUserDataSummary, EndUserDataType, EndUserDeletionResult, EndUserService
 
 
 class TestEndUserServiceLookup:
@@ -154,7 +154,7 @@ class TestEndUserServiceDelete:
             return_value=MagicMock(begin=begin),
         )
 
-        result = EndUserService.delete_all_data(app, end_user)
+        result = EndUserService.delete_all_data(app, end_user, EndUserDataType.ALL)
 
         assert result == EndUserDeletionResult(conversations_marked=2)
         dispatch.assert_called_once_with(["c1", "c2"])
@@ -187,10 +187,63 @@ class TestEndUserServiceDelete:
             return_value=MagicMock(begin=begin),
         )
 
-        result = EndUserService.delete_all_data(app, end_user)
+        result = EndUserService.delete_all_data(app, end_user, EndUserDataType.ALL)
 
         assert result.conversations_marked == 0
         upload_task.delay.assert_called_once_with(app.tenant_id, end_user.id)
+
+    def test_delete_upload_files_skips_conversations(self, mocker: MockerFixture) -> None:
+        app = App(id="app-1", tenant_id="tenant-1")
+        end_user = EndUser(
+            id="end-user-1",
+            tenant_id="tenant-1",
+            app_id="app-1",
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-1",
+            session_id="external-1",
+        )
+
+        mocker.patch.object(EndUserService, "_dispatch_conversation_cleanup")
+        upload_task = mocker.patch("services.end_user_service.delete_end_user_upload_files")
+        mocker.patch("services.end_user_service.db", MagicMock())
+        sessionmaker_mock = mocker.patch("services.end_user_service.sessionmaker")
+
+        result = EndUserService.delete_all_data(app, end_user, EndUserDataType.UPLOAD_FILES)
+
+        assert result == EndUserDeletionResult(conversations_marked=0)
+        upload_task.delay.assert_called_once_with(app.tenant_id, end_user.id)
+        sessionmaker_mock.assert_not_called()
+
+    def test_delete_conversations_skips_upload_files(self, mocker: MockerFixture) -> None:
+        app = App(id="app-1", tenant_id="tenant-1")
+        end_user = EndUser(
+            id="end-user-1",
+            tenant_id="tenant-1",
+            app_id="app-1",
+            type=EndUserType.SERVICE_API,
+            external_user_id="external-1",
+            session_id="external-1",
+        )
+
+        session = MagicMock()
+        session.execute.return_value = [("c1",), ("c2",), ("c3",)]
+
+        def begin():
+            return _BeginCtx(session)
+
+        dispatch = mocker.patch.object(EndUserService, "_dispatch_conversation_cleanup")
+        upload_task = mocker.patch("services.end_user_service.delete_end_user_upload_files")
+        mocker.patch("services.end_user_service.db", MagicMock())
+        mocker.patch(
+            "services.end_user_service.sessionmaker",
+            return_value=MagicMock(begin=begin),
+        )
+
+        result = EndUserService.delete_all_data(app, end_user, EndUserDataType.CONVERSATIONS)
+
+        assert result == EndUserDeletionResult(conversations_marked=3)
+        dispatch.assert_called_once_with(["c1", "c2", "c3"])
+        upload_task.delay.assert_not_called()
 
     def test_dispatch_skips_when_above_threshold(self, mocker: MockerFixture) -> None:
         conversation_task = mocker.patch("services.end_user_service.delete_conversation_related_data")

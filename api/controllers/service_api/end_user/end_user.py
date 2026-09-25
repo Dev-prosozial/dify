@@ -10,7 +10,7 @@ from controllers.service_api.end_user.error import EndUserNotFoundError
 from controllers.service_api.wraps import validate_app_token
 from fields.end_user_fields import EndUserDataSummaryResponse, EndUserDeletionResponse, EndUserDetail
 from models.model import App, DefaultEndUserSessionID
-from services.end_user_service import EndUserService
+from services.end_user_service import EndUserDataType, EndUserService
 
 register_response_schema_models(service_api_ns, EndUserDetail, EndUserDataSummaryResponse, EndUserDeletionResponse)
 
@@ -122,17 +122,19 @@ class EndUserSummaryApi(Resource):
     @service_api_ns.doc(
         summary="Delete End User Data",
         description=(
-            "Delete the conversations and uploaded files of an end user of the current app, "
-            "identified by the external `user` ID. The end user identity is preserved; only its "
-            "owned data is removed (conversations immediately, files asynchronously). "
-            "Idempotent: repeat calls return 202."
+            "Delete the conversations and/or uploaded files of an end user of the current app, "
+            "identified by the external `user` ID. The `data_type` query parameter is required and "
+            "selects what is deleted: `all`, `upload_files`, or `conversations`. The end user "
+            "identity is preserved; only its owned data is removed (conversations immediately, "
+            "files asynchronously). Idempotent: repeat calls return 202."
         ),
         tags=["End Users"],
         responses={
             202: "End user data deletion accepted.",
             400: (
-                "`bad_request` : Query parameter `user` is required, or `user` resolves to the "
-                "anonymous/DEFAULT-USER sentinel which cannot be deleted."
+                "`bad_request` : Query parameter `user` is required, `data_type` is missing or "
+                "invalid, or `user` resolves to the anonymous/DEFAULT-USER sentinel which cannot "
+                "be deleted."
             ),
             404: "`end_user_not_found` : End user not found.",
         },
@@ -140,10 +142,13 @@ class EndUserSummaryApi(Resource):
     @service_api_ns.doc("delete_end_user_data")
     @service_api_ns.doc(description="Delete an end user's data by external user ID")
     @service_api_ns.doc(
-        params={"user": "External user ID identifying the end user within the current app."},
+        params={
+            "user": "External user ID identifying the end user within the current app.",
+            "data_type": "What to delete: `all`, `upload_files`, or `conversations` (required).",
+        },
         responses={
             202: "End user data deletion accepted",
-            400: "Bad request - `user` is required or resolves to the anonymous sentinel",
+            400: "Bad request - `user`/`data_type` invalid or `user` resolves to the anonymous sentinel",
             401: "Unauthorized - invalid API token",
             404: "End user not found",
         },
@@ -155,13 +160,26 @@ class EndUserSummaryApi(Resource):
     def delete(self, app_model: App):
         """Delete an end user's data.
 
-        Guard: the anonymous/`DEFAULT-USER` sentinel is shared by every anonymous
-        visitor of an app and must never be wiped. Returns 400 for it.
+        The required `data_type` query parameter selects which data to delete
+        (`all`, `upload_files`, or `conversations`). Guard: the anonymous/
+        `DEFAULT-USER` sentinel is shared by every anonymous visitor of an app
+        and must never be wiped. Returns 400 for it regardless of `data_type`.
         """
 
         external_user_id = request.args.get("user")
         if not external_user_id:
             raise BadRequest("Query parameter 'user' is required.")
+
+        data_type_raw = request.args.get("data_type")
+        if not data_type_raw:
+            raise BadRequest("Query parameter 'data_type' is required.")
+        try:
+            data_type = EndUserDataType(data_type_raw)
+        except ValueError:
+            raise BadRequest(
+                f"Invalid 'data_type': {data_type_raw!r}. Must be one of: "
+                f"{', '.join(t.value for t in EndUserDataType)}."
+            )
 
         end_user = EndUserService.get_end_user_by_external_id(
             tenant_id=app_model.tenant_id, app_id=app_model.id, external_user_id=external_user_id
@@ -172,9 +190,10 @@ class EndUserSummaryApi(Resource):
         if end_user.session_id == DefaultEndUserSessionID.DEFAULT_SESSION_ID:
             raise BadRequest("Cannot delete data for the anonymous user.")
 
-        result = EndUserService.delete_all_data(app_model, end_user)
+        result = EndUserService.delete_all_data(app_model, end_user, data_type)
         response = EndUserDeletionResponse(
             end_user_id=end_user.id,
+            data_type=data_type,
             conversations_marked=result.conversations_marked,
         )
         return response.model_dump(mode="json"), 202
