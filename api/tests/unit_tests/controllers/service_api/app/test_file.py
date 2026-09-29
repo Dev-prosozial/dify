@@ -466,3 +466,50 @@ class TestFileApiPost:
             "status": 400,
         }
         assert raised.value.__cause__ is service_error
+
+
+class TestFileApiDelete:
+    """Test suite for FileDetailApi.delete() endpoint.
+
+    ``delete`` is wrapped by ``@expect_user_json`` and ``@validate_app_token``
+    which both preserve ``__wrapped__``. We call the unwrapped method directly
+    to bypass the decorators.
+    """
+
+    def _call_delete(self, api, app_model, end_user, file_id):
+        return unwrap(api.delete)(api, app_model=app_model, end_user=end_user, file_id=file_id)
+
+    @patch("controllers.service_api.app.file.application_services")
+    def test_delete_file_success(self, mock_application_services, app: Flask, mock_app_model, mock_end_user):
+        from controllers.service_api.app.file import FileDetailApi
+
+        file_service = mock_application_services.return_value.files
+        file_service.delete_owned_file.return_value = True
+        file_id = uuid.UUID("550e8400-e29b-41d4-a716-446655440000")
+
+        api = FileDetailApi()
+        response, status = self._call_delete(api, mock_app_model, mock_end_user, file_id)
+
+        assert status == 204
+        assert response == ""
+        file_service.delete_owned_file.assert_called_once_with(
+            tenant_id=mock_app_model.tenant_id,
+            end_user_id=mock_end_user.id,
+            file_id=str(file_id),
+        )
+
+    @patch("controllers.service_api.app.file.application_services")
+    def test_delete_file_not_found(self, mock_application_services, app: Flask, mock_app_model, mock_end_user):
+        from controllers.common.errors import FileNotFoundError
+        from controllers.service_api.app.file import FileDetailApi
+
+        file_service = mock_application_services.return_value.files
+        file_service.delete_owned_file.return_value = False
+        file_id = uuid.UUID("550e8400-e29b-41d4-a716-446655440000")
+
+        api = FileDetailApi()
+        with pytest.raises(FileNotFoundError) as raised:
+            self._call_delete(api, mock_app_model, mock_end_user, file_id)
+
+        assert raised.value.code == 404
+        assert raised.value.error_code == "file_not_found"

@@ -54,6 +54,8 @@ class TestFileService:
         extension: str = "txt",
         mime_type: str = "text/plain",
         key: str = "key",
+        created_by_role: CreatorUserRole = CreatorUserRole.ACCOUNT,
+        created_by: str = "user_id",
     ) -> UploadFile:
         upload_file = UploadFile(
             tenant_id=tenant_id,
@@ -63,8 +65,8 @@ class TestFileService:
             size=10,
             extension=extension,
             mime_type=mime_type,
-            created_by_role=CreatorUserRole.ACCOUNT,
-            created_by="user_id",
+            created_by_role=created_by_role,
+            created_by=created_by,
             created_at=datetime(2024, 1, 1, tzinfo=UTC),
             used=False,
         )
@@ -470,6 +472,135 @@ class TestFileService:
     def test_delete_file_not_found(self, file_service: FileService):
         file_service.delete_file("file_id")
         # Should return without doing anything
+
+    def test_delete_owned_file_success(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_owned_file(
+                tenant_id="tenant_id",
+                end_user_id="end_user_id",
+                file_id="file_id",
+            )
+
+        assert result is True
+        mock_storage.delete.assert_called_once_with("key")
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is None
+
+    def test_delete_owned_file_not_found(self, file_service: FileService):
+        result = file_service.delete_owned_file(
+            tenant_id="tenant_id",
+            end_user_id="end_user_id",
+            file_id="file_id",
+        )
+        assert result is False
+
+    def test_delete_owned_file_wrong_owner(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="other_end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_owned_file(
+                tenant_id="tenant_id",
+                end_user_id="end_user_id",
+                file_id="file_id",
+            )
+
+        assert result is False
+        mock_storage.delete.assert_not_called()
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is not None
+
+    def test_delete_owned_file_wrong_tenant(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            tenant_id="other_tenant_id",
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_owned_file(
+                tenant_id="tenant_id",
+                end_user_id="end_user_id",
+                file_id="file_id",
+            )
+
+        assert result is False
+        mock_storage.delete.assert_not_called()
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is not None
+
+    def test_delete_owned_file_wrong_role(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            created_by_role=CreatorUserRole.ACCOUNT,
+            created_by="end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_owned_file(
+                tenant_id="tenant_id",
+                end_user_id="end_user_id",
+                file_id="file_id",
+            )
+
+        assert result is False
+        mock_storage.delete.assert_not_called()
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is not None
+
+    def test_delete_owned_file_storage_error_when_object_absent(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            mock_storage.delete.side_effect = Exception("storage down")
+            mock_storage.exists.return_value = False
+
+            result = file_service.delete_owned_file(
+                tenant_id="tenant_id",
+                end_user_id="end_user_id",
+                file_id="file_id",
+            )
+
+        assert result is True
+        mock_storage.delete.assert_called_once_with("key")
+        mock_storage.exists.assert_called_once_with("key")
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is None
+
+    def test_delete_owned_file_storage_error_when_object_present(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session,
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end_user_id",
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            mock_storage.delete.side_effect = Exception("storage down")
+            mock_storage.exists.return_value = True
+
+            with pytest.raises(Exception, match="storage down"):
+                file_service.delete_owned_file(
+                    tenant_id="tenant_id",
+                    end_user_id="end_user_id",
+                    file_id="file_id",
+                )
+
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "file_id") is not None
 
     def test_get_upload_files_by_ids_empty(self, db_session: Session):
         result = FileService.get_upload_files_by_ids("tenant_id", [], session=db_session)

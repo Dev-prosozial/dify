@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from flask import request
 from flask_restx import Resource
 from flask_restx.api import HTTPStatus
@@ -6,6 +8,7 @@ import services
 from controllers.common.errors import (
     BlockedFileExtensionError,
     FilenameNotExistsError,
+    FileNotFoundError,
     FileTooLargeError,
     NoFileUploadedError,
     TooManyFilesError,
@@ -13,7 +16,7 @@ from controllers.common.errors import (
 )
 from controllers.common.schema import JsonResponseWithStatus, register_response_schema_models
 from controllers.service_api import service_api_ns
-from controllers.service_api.schema import multipart_file_params
+from controllers.service_api.schema import expect_user_json, multipart_file_params
 from controllers.service_api.wraps import FetchUserArg, WhereisUserArg, validate_app_token
 from extensions.ext_application_services import application_services
 from fields.file_fields import FileResponse
@@ -92,3 +95,29 @@ class FileApi(Resource):
             raise BlockedFileExtensionError() from blocked_file_extension_error
 
         return dump_response(FileResponse, upload_file), 201
+
+
+@service_api_ns.route("/files/<uuid:file_id>")
+class FileDetailApi(Resource):
+    @service_api_ns.doc(
+        summary="Delete File",
+        description="Delete a single uploaded file by ID. The file must belong to the calling end user.",
+        tags=["Files"],
+        responses={
+            204: "File deleted successfully.",
+            400: "`bad_request` : 'user' is required.",
+            404: "`file_not_found` : File does not exist or does not belong to this end user.",
+        },
+    )
+    @expect_user_json(service_api_ns)
+    @validate_app_token(fetch_user_arg=FetchUserArg(fetch_from=WhereisUserArg.JSON))
+    def delete(self, app_model: App, end_user: EndUser, file_id: UUID):
+        """Delete a specific uploaded file owned by the calling end user."""
+        deleted = application_services().files.delete_owned_file(
+            tenant_id=app_model.tenant_id,
+            end_user_id=end_user.id,
+            file_id=str(file_id),
+        )
+        if not deleted:
+            raise FileNotFoundError()
+        return "", 204

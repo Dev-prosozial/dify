@@ -79,6 +79,12 @@ class NoFileUploadedError(BaseHTTPException):
     code = 400
 
 
+class FileNotFoundError(BaseHTTPException):
+    error_code = "file_not_found"
+    description = "The requested file was not found or does not belong to this end user."
+    code = 404
+
+
 class NotFoundError(BaseHTTPException):
     error_code = "not_found"
     code = 404

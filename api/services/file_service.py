@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import os
 import uuid
 from collections.abc import Generator, Sequence  # Changed Iterator to Generator
@@ -33,6 +34,8 @@ from models.model import EndUser, UploadFile
 from .errors.file import BlockedFileExtensionError, FileNotExistsError, FileTooLargeError, UnsupportedFileTypeError
 
 PREVIEW_WORDS_LIMIT = 3000
+
+logger = logging.getLogger(__name__)
 
 
 class FileService:
@@ -270,6 +273,35 @@ class FileService:
                 return
             storage.delete(upload_file.key)
             session.delete(upload_file)
+
+    def delete_owned_file(self, *, tenant_id: str, end_user_id: str, file_id: str) -> bool:
+        """Delete a single UploadFile owned by the given end user, if it exists.
+
+        Returns True if a file was found and deleted, False if no matching file exists
+        (already deleted, wrong owner, or wrong tenant) — the caller treats False as 404.
+        """
+        with self._session_maker() as session, session.begin():
+            upload_file = session.scalar(
+                select(UploadFile).where(
+                    UploadFile.id == file_id,
+                    UploadFile.tenant_id == tenant_id,
+                    UploadFile.created_by == end_user_id,
+                    UploadFile.created_by_role == CreatorUserRole.END_USER,
+                )
+            )
+            if not upload_file:
+                return False
+
+            try:
+                storage.delete(upload_file.key)
+            except Exception:
+                if storage.exists(upload_file.key):
+                    raise
+                logger.info("Storage object %s was already absent", upload_file.key)
+
+            session.delete(upload_file)
+
+        return True
 
     @staticmethod
     def get_upload_file_by_id(tenant_id: str, upload_file_id: str, *, session: Session) -> UploadFile | None:
