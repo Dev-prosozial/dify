@@ -613,6 +613,140 @@ class TestConversationServiceCountForUser:
         assert result == 1
 
 
+class TestConversationServiceDeleteAllForUser:
+    """Test ConversationService.delete_all_for_user."""
+
+    def _delete_spy(self) -> MagicMock:
+        def _fake_delete(_app_model, _conversation_id, _user, *, session):
+            conversation = session.get(Conversation, _conversation_id)
+            conversation.is_deleted = True
+            session.commit()
+
+        return MagicMock(side_effect=_fake_delete)
+
+    def test_delete_all_for_user_returns_zero_when_no_conversations(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        delete_mock = self._delete_spy()
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 0
+        delete_mock.assert_not_called()
+
+    def test_delete_all_for_user_deletes_multiple_conversations(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID),
+            ]
+        )
+        sqlite_session.commit()
+        delete_mock = self._delete_spy()
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 2
+        assert delete_mock.call_count == 2
+        assert {call.args[1] for call in delete_mock.call_args_list} == {CONVERSATION_ID, OTHER_CONVERSATION_ID}
+
+    def test_delete_all_for_user_is_isolated_by_app(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID, app_id=OTHER_APP_ID),
+            ]
+        )
+        sqlite_session.commit()
+        delete_mock = self._delete_spy()
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 1
+        assert delete_mock.call_count == 1
+        assert delete_mock.call_args.args[1] == CONVERSATION_ID
+
+    def test_delete_all_for_user_is_isolated_by_user(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID, end_user_id="another-end-user"),
+            ]
+        )
+        sqlite_session.commit()
+        delete_mock = self._delete_spy()
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 1
+        assert delete_mock.call_count == 1
+        assert delete_mock.call_args.args[1] == CONVERSATION_ID
+
+    def test_delete_all_for_user_skips_already_soft_deleted(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add(
+            _end_user_conversation(conversation_id=CONVERSATION_ID, is_deleted=True),
+        )
+        sqlite_session.commit()
+        delete_mock = self._delete_spy()
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 0
+        delete_mock.assert_not_called()
+
+    def test_delete_all_for_user_soft_deletes_and_enqueues_cleanup(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID),
+            ]
+        )
+        sqlite_session.commit()
+        monkeypatch.setattr(conversation_service, "enqueue_agent_resource_collection", MagicMock())
+        delete_related = MagicMock()
+        monkeypatch.setattr(conversation_service.delete_conversation_related_data, "delay", delete_related)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 2
+        assert delete_related.call_count == 2
+        assert {call_args.args[0] for call_args in delete_related.call_args_list} == {
+            CONVERSATION_ID,
+            OTHER_CONVERSATION_ID,
+        }
+        persisted_ids = {row.id for row in sqlite_session.query(Conversation).all()}
+        assert persisted_ids == {CONVERSATION_ID, OTHER_CONVERSATION_ID}
+        for row in sqlite_session.query(Conversation).all():
+            assert row.is_deleted is True
+
+
 class TestConversationServiceHelpers:
     """Test helper methods in ConversationService."""
 

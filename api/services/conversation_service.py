@@ -121,6 +121,41 @@ class ConversationService:
         return session.scalar(count_stmt) or 0
 
     @classmethod
+    def delete_all_for_user(cls, app_model: App, user: Account | EndUser, *, session: Session) -> int:
+        """Soft-delete every conversation owned by a user in the given app.
+
+        Reuses the exact ownership predicate of `count_for_user` (which deliberately omits the
+        `invoke_from` filter used by `pagination_by_last_id`), so the number counted and the number
+        actually deleted are guaranteed to match. Each conversation is soft-deleted through the
+        existing `delete`, which retires agent workspaces and enqueues async cleanup. Candidates are
+        selected in batches; because each delete flips `is_deleted` to True, the next batch query
+        automatically skips them, so no cursor is required.
+
+        Returns:
+            The number of conversations soft-deleted.
+        """
+        deleted_count = 0
+        while True:
+            stmt = (
+                select(Conversation.id)
+                .where(
+                    Conversation.is_deleted == False,
+                    Conversation.app_id == app_model.id,
+                    Conversation.from_source == ("api" if isinstance(user, EndUser) else "console"),
+                    Conversation.from_end_user_id == (user.id if isinstance(user, EndUser) else None),
+                    Conversation.from_account_id == (user.id if isinstance(user, Account) else None),
+                )
+                .limit(100)
+            )
+            conversation_ids = list(session.scalars(stmt).all())
+            if not conversation_ids:
+                break
+            for conversation_id in conversation_ids:
+                cls.delete(app_model, conversation_id, user, session=session)
+                deleted_count += 1
+        return deleted_count
+
+    @classmethod
     def _get_sort_params(cls, sort_by: str):
         if sort_by.startswith("-"):
             return sort_by[1:], desc

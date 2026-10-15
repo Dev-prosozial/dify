@@ -18,7 +18,13 @@ class UserDataCounts(ResponseModel):
     upload_file_count: int
 
 
-register_response_schema_models(service_api_ns, UserDataCounts)
+class UserDataDeletionSummary(ResponseModel):
+    deleted_conversations: int
+    deleted_upload_files: int
+    failed_upload_file_ids: list[str] = []
+
+
+register_response_schema_models(service_api_ns, UserDataCounts, UserDataDeletionSummary)
 
 
 @service_api_ns.route("/user-data")
@@ -60,4 +66,45 @@ class UserDataApi(Resource):
         return UserDataCounts(
             conversation_count=conversation_count,
             upload_file_count=upload_file_count,
+        ).model_dump(mode="json")
+
+    @error_responses()
+    @service_api_ns.doc(
+        summary="Delete User Data",
+        description=(
+            "Delete all conversations and upload_files accumulated by a single end-user of the "
+            "app. Conversations are soft-deleted (cleaned up asynchronously); upload_files are "
+            "hard-deleted. Returns the numbers deleted and any upload_file ids that could not be "
+            "removed."
+        ),
+        tags=["User Data"],
+        responses={
+            200: "Successfully deleted user data.",
+            401: "Unauthorized - invalid API token or missing `user`.",
+        },
+    )
+    @service_api_ns.doc("delete_user_data")
+    @service_api_ns.doc(description="Delete all conversations and upload files for a user")
+    @service_api_ns.response(
+        200,
+        "User data deleted successfully",
+        service_api_ns.models[UserDataDeletionSummary.__name__],
+    )
+    @validate_app_token(fetch_user_arg=FetchUserArg(fetch_from=WhereisUserArg.JSON, required=True))
+    def delete(self, app_model: App, end_user: EndUser):
+        """Delete all conversations and upload_files for the current end-user."""
+        deleted_conversations = ConversationService.delete_all_for_user(
+            app_model,
+            end_user,
+            session=db.session(),
+        )
+        deleted_upload_files, failed_upload_file_ids = application_services().files.delete_files_by_user(
+            tenant_id=app_model.tenant_id,
+            user_id=end_user.id,
+            role=CreatorUserRole.END_USER,
+        )
+        return UserDataDeletionSummary(
+            deleted_conversations=deleted_conversations,
+            deleted_upload_files=deleted_upload_files,
+            failed_upload_file_ids=failed_upload_file_ids,
         ).model_dump(mode="json")

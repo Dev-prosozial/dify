@@ -578,6 +578,125 @@ class TestFileService:
 
         assert result == 1
 
+    def test_delete_files_by_user_zero(self, file_service: FileService):
+        result = file_service.delete_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+        assert result == (0, [])
+
+    def test_delete_files_by_user_multiple(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_files_by_user(
+                tenant_id="tenant_id",
+                user_id="end-user",
+                role=CreatorUserRole.END_USER,
+            )
+
+        assert result == (2, [])
+        assert mock_storage.delete.call_count == 2
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "f-1") is None
+        assert db_session.get(UploadFile, "f-2") is None
+
+    def test_delete_files_by_user_is_isolated_by_tenant(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session,
+            file_id="f-2",
+            tenant_id="other-tenant",
+            user_id="end-user",
+            created_by_role=CreatorUserRole.END_USER,
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_files_by_user(
+                tenant_id="tenant_id",
+                user_id="end-user",
+                role=CreatorUserRole.END_USER,
+            )
+
+        assert result == (1, [])
+        mock_storage.delete.assert_called_once_with("key")
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "f-1") is None
+        assert db_session.get(UploadFile, "f-2") is not None
+
+    def test_delete_files_by_user_is_isolated_by_role(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="end-user", created_by_role=CreatorUserRole.ACCOUNT
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_files_by_user(
+                tenant_id="tenant_id",
+                user_id="end-user",
+                role=CreatorUserRole.END_USER,
+            )
+
+        assert result == (1, [])
+        mock_storage.delete.assert_called_once_with("key")
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "f-1") is None
+        assert db_session.get(UploadFile, "f-2") is not None
+
+    def test_delete_files_by_user_is_isolated_by_user(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="other-user", created_by_role=CreatorUserRole.END_USER
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            result = file_service.delete_files_by_user(
+                tenant_id="tenant_id",
+                user_id="end-user",
+                role=CreatorUserRole.END_USER,
+            )
+
+        assert result == (1, [])
+        mock_storage.delete.assert_called_once_with("key")
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "f-1") is None
+        assert db_session.get(UploadFile, "f-2") is not None
+
+    def test_delete_files_by_user_partial_failure(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER, key="fail-key"
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="end-user", created_by_role=CreatorUserRole.END_USER, key="ok-key"
+        )
+
+        with patch("services.file_service.storage") as mock_storage:
+            mock_storage.delete.side_effect = lambda key: (
+                (_ for _ in ()).throw(RuntimeError("storage down")) if key == "fail-key" else None
+            )
+            result = file_service.delete_files_by_user(
+                tenant_id="tenant_id",
+                user_id="end-user",
+                role=CreatorUserRole.END_USER,
+            )
+
+        assert result == (1, ["f-1"])
+        db_session.expire_all()
+        assert db_session.get(UploadFile, "f-1") is not None
+        assert db_session.get(UploadFile, "f-2") is None
+
     def test_sanitize_zip_entry_name(self):
         assert FileService._sanitize_zip_entry_name("path/to/file.txt") == "file.txt"
         assert FileService._sanitize_zip_entry_name("../../../etc/passwd") == "passwd"

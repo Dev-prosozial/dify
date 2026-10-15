@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import os
 import posixpath
 import uuid
@@ -36,6 +37,8 @@ from models.model import EndUser, UploadFile
 from .errors.file import BlockedFileExtensionError, FileNotExistsError, FileTooLargeError, UnsupportedFileTypeError
 
 PREVIEW_WORDS_LIMIT = 3000
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,6 +418,59 @@ class FileService:
         )
         with self._session_maker() as session:
             return session.scalar(count_stmt) or 0
+
+    def delete_files_by_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        role: CreatorUserRole,
+    ) -> tuple[int, list[str]]:
+        """Hard-delete every `UploadFile` created by the given user in a tenant.
+
+        Uses the exact filter of `count_upload_files_by_user` (`tenant_id`, `created_by`,
+        `created_by_role`), so the number counted and the number actually deleted match. Files are
+        selected in batches and deleted one-by-one through `delete_file` (storage object + row in a
+        single transaction). Failures on individual rows are logged and collected without aborting
+        the batch; the loop stops once a batch yields no progress to avoid spinning on
+        perpetually-failing rows.
+
+        Returns:
+            A tuple of (number of files deleted, ids that failed to delete).
+        """
+        deleted_count = 0
+        failed_ids: list[str] = []
+        seen_failed: set[str] = set()
+        while True:
+            with self._session_maker() as session:
+                ids = list(
+                    session.scalars(
+                        select(UploadFile.id)
+                        .where(
+                            UploadFile.tenant_id == tenant_id,
+                            UploadFile.created_by == user_id,
+                            UploadFile.created_by_role == role,
+                        )
+                        .limit(100)
+                    ).all()
+                )
+            if not ids:
+                break
+            batch_progress = False
+            for file_id in ids:
+                if file_id in seen_failed:
+                    continue
+                try:
+                    self.delete_file(file_id)
+                    deleted_count += 1
+                    batch_progress = True
+                except Exception:
+                    logger.exception("Failed to delete upload file %s", file_id)
+                    failed_ids.append(file_id)
+                    seen_failed.add(file_id)
+            if not batch_progress:
+                break
+        return deleted_count, failed_ids
 
     @staticmethod
     def _sanitize_zip_entry_name(name: str) -> str:
