@@ -32,7 +32,7 @@ from models.agent import (
     AgentWorkspaceOwnerType,
 )
 from models.enums import AppStatus, ConversationFromSource, ConversationStatus
-from models.model import App, AppMode, Conversation, Message
+from models.model import App, AppMode, Conversation, EndUser, Message
 from repositories.conversation_lifecycle import retire_conversation
 from services import conversation_service
 from services.agent.workspace_service import AgentWorkspaceNotFoundError, WorkspaceOwnerScope
@@ -49,6 +49,7 @@ OTHER_APP_ID = "77777777-7777-7777-7777-777777777777"
 OTHER_CONVERSATION_ID = "88888888-8888-8888-8888-888888888888"
 OTHER_APP_VARIABLE_ID = "99999999-9999-9999-9999-999999999999"
 OTHER_CONVERSATION_VARIABLE_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+END_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
 def _conversation_variable(
@@ -179,6 +180,27 @@ class ConversationServiceTestDataFactory:
         for key, value in kwargs.items():
             setattr(conversation, key, value)
         return conversation
+
+
+def _end_user(user_id: str = END_USER_ID) -> EndUser:
+    return EndUser(id=user_id)
+
+
+def _end_user_conversation(
+    *,
+    conversation_id: str,
+    app_id: str = APP_ID,
+    end_user_id: str = END_USER_ID,
+    is_deleted: bool = False,
+) -> Conversation:
+    return ConversationServiceTestDataFactory.create_conversation(
+        conversation_id=conversation_id,
+        app_id=app_id,
+        from_source=ConversationFromSource.API,
+        from_end_user_id=end_user_id,
+        from_account_id=None,
+        is_deleted=is_deleted,
+    )
 
 
 @pytest.fixture
@@ -517,6 +539,78 @@ class TestConversationServicePagination:
         assert result.has_more is False
         assert result.limit == 20
         assert not sqlite_session.in_transaction()
+
+
+class TestConversationServiceCountForUser:
+    """Test ConversationService.count_for_user."""
+
+    def test_count_for_user_returns_zero_when_no_conversations(self, sqlite_session: Session) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+
+        result = ConversationService.count_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 0
+
+    def test_count_for_user_counts_multiple_conversations(self, sqlite_session: Session) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID),
+            ]
+        )
+        sqlite_session.commit()
+
+        result = ConversationService.count_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 2
+
+    def test_count_for_user_excludes_soft_deleted_conversations(self, sqlite_session: Session) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID, is_deleted=True),
+            ]
+        )
+        sqlite_session.commit()
+
+        result = ConversationService.count_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 1
+
+    def test_count_for_user_is_isolated_by_app(self, sqlite_session: Session) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID, app_id=OTHER_APP_ID),
+            ]
+        )
+        sqlite_session.commit()
+
+        result = ConversationService.count_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 1
+
+    def test_count_for_user_is_isolated_by_user(self, sqlite_session: Session) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID, end_user_id="another-end-user"),
+            ]
+        )
+        sqlite_session.commit()
+
+        result = ConversationService.count_for_user(app_model, user, session=sqlite_session)
+
+        assert result == 1
 
 
 class TestConversationServiceHelpers:

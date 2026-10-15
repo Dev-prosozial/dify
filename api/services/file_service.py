@@ -11,7 +11,7 @@ from tempfile import NamedTemporaryFile
 from typing import Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.exceptions import NotFound
 
@@ -395,6 +395,26 @@ class FileService:
             )
         ).all()
         return {str(upload_file.id): upload_file for upload_file in upload_files}
+
+    def count_upload_files_by_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        role: CreatorUserRole,
+    ) -> int:
+        """Count all `UploadFile` rows ever created by the given user in a tenant."""
+        count_stmt = select(func.count()).select_from(
+            select(UploadFile)
+            .where(
+                UploadFile.tenant_id == tenant_id,
+                UploadFile.created_by == user_id,
+                UploadFile.created_by_role == role,
+            )
+            .subquery()
+        )
+        with self._session_maker() as session:
+            return session.scalar(count_stmt) or 0
 
     @staticmethod
     def _sanitize_zip_entry_name(name: str) -> str:

@@ -53,6 +53,8 @@ class TestFileService:
         extension: str = "txt",
         mime_type: str = "text/plain",
         key: str = "key",
+        user_id: str = "user_id",
+        created_by_role: CreatorUserRole = CreatorUserRole.ACCOUNT,
     ) -> UploadFile:
         upload_file = UploadFile(
             tenant_id=tenant_id,
@@ -62,8 +64,8 @@ class TestFileService:
             size=10,
             extension=extension,
             mime_type=mime_type,
-            created_by_role=CreatorUserRole.ACCOUNT,
-            created_by="user_id",
+            created_by_role=created_by_role,
+            created_by=user_id,
             created_at=datetime(2024, 1, 1, tzinfo=UTC),
             used=False,
         )
@@ -499,6 +501,82 @@ class TestFileService:
             session=db_session,
         )
         assert result["550e8400-e29b-41d4-a716-446655440000"] == upload_file
+
+    def test_count_upload_files_by_user_zero(self, file_service: FileService):
+        result = file_service.count_upload_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+        assert result == 0
+
+    def test_count_upload_files_by_user_multiple(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+
+        result = file_service.count_upload_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+
+        assert result == 2
+
+    def test_count_upload_files_by_user_is_isolated_by_tenant(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session,
+            file_id="f-2",
+            tenant_id="other-tenant",
+            user_id="end-user",
+            created_by_role=CreatorUserRole.END_USER,
+        )
+
+        result = file_service.count_upload_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+
+        assert result == 1
+
+    def test_count_upload_files_by_user_is_isolated_by_role(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="end-user", created_by_role=CreatorUserRole.ACCOUNT
+        )
+
+        result = file_service.count_upload_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+
+        assert result == 1
+
+    def test_count_upload_files_by_user_is_isolated_by_user(self, file_service: FileService, db_session: Session):
+        self._persist_upload_file(
+            db_session, file_id="f-1", user_id="end-user", created_by_role=CreatorUserRole.END_USER
+        )
+        self._persist_upload_file(
+            db_session, file_id="f-2", user_id="other-user", created_by_role=CreatorUserRole.END_USER
+        )
+
+        result = file_service.count_upload_files_by_user(
+            tenant_id="tenant_id",
+            user_id="end-user",
+            role=CreatorUserRole.END_USER,
+        )
+
+        assert result == 1
 
     def test_sanitize_zip_entry_name(self):
         assert FileService._sanitize_zip_entry_name("path/to/file.txt") == "file.txt"

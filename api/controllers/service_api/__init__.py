@@ -39,6 +39,7 @@ from .app import (
     human_input_form,
     message,
     site,
+    user_data,
     workflow,
     workflow_events,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "rag_pipeline_workflow",
     "segment",
     "site",
+    "user_data",
     "workflow",
     "workflow_events",
 ]

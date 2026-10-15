@@ -101,6 +101,26 @@ class ConversationService:
         return InfiniteScrollPagination(data=conversations, limit=limit, has_more=has_more)
 
     @classmethod
+    def count_for_user(cls, app_model: App, user: Account | EndUser, *, session: Session) -> int:
+        """Count non-deleted conversations owned by a user in the given app.
+
+        Mirrors the ownership predicate used by `pagination_by_last_id` /
+        `get_conversation`, but returns an aggregate count without pagination.
+        """
+        count_stmt = select(func.count()).select_from(
+            select(Conversation)
+            .where(
+                Conversation.is_deleted == False,
+                Conversation.app_id == app_model.id,
+                Conversation.from_source == ("api" if isinstance(user, EndUser) else "console"),
+                Conversation.from_end_user_id == (user.id if isinstance(user, EndUser) else None),
+                Conversation.from_account_id == (user.id if isinstance(user, Account) else None),
+            )
+            .subquery()
+        )
+        return session.scalar(count_stmt) or 0
+
+    @classmethod
     def _get_sort_params(cls, sort_by: str):
         if sort_by.startswith("-"):
             return sort_by[1:], desc
