@@ -171,10 +171,10 @@ class TestUserDataApiDelete:
         handler = api.delete
         assert getattr(handler, "_dify_service_api_user_required", None) is True
 
-    def test_delete_user_fetched_from_json(self) -> None:
+    def test_delete_user_fetched_from_query(self) -> None:
         api = UserDataApi()
         handler = api.delete
-        assert getattr(handler, "_dify_service_api_user_fetch_from", None) == "JSON"
+        assert getattr(handler, "_dify_service_api_user_fetch_from", None) == "QUERY"
 
     def test_delete_returns_aggregate_summary(
         self,
@@ -228,7 +228,7 @@ class TestUserDataApiDelete:
         api = UserDataApi()
         handler = unwrap(api.delete)
 
-        with app.test_request_context("/user-data", method="DELETE"):
+        with app.test_request_context("/user-data?user=end-user-1", method="DELETE"):
             result = handler(api, app_model=app_model, end_user=end_user)
 
         assert result == {
@@ -260,7 +260,7 @@ class TestUserDataApiDelete:
         api = UserDataApi()
         handler = unwrap(api.delete)
 
-        with app.test_request_context("/user-data", method="DELETE"):
+        with app.test_request_context("/user-data?user=end-user-1", method="DELETE"):
             result = handler(api, app_model=app_model, end_user=end_user)
 
         assert result == {
@@ -305,7 +305,7 @@ class TestUserDataApiDelete:
         api = UserDataApi()
         handler = unwrap(api.delete)
 
-        with app.test_request_context("/user-data", method="DELETE"):
+        with app.test_request_context("/user-data?user=end-user-1", method="DELETE"):
             result = handler(api, app_model=app_model, end_user=end_user)
 
         assert result["deleted_conversations"] == 0
@@ -338,7 +338,7 @@ class TestUserDataApiDelete:
         api = UserDataApi()
         handler = unwrap(api.delete)
 
-        with app.test_request_context("/user-data", method="DELETE"):
+        with app.test_request_context("/user-data?user=end-user-1", method="DELETE"):
             result = handler(api, app_model=app_model, end_user=end_user)
 
         assert result == {

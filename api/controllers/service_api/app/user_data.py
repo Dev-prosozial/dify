@@ -91,7 +91,7 @@ class UserDataApi(Resource):
         "User data deleted successfully",
         service_api_ns.models[UserDataDeletionSummary.__name__],
     )
-    @validate_app_token(fetch_user_arg=FetchUserArg(fetch_from=WhereisUserArg.JSON, required=True))
+    @validate_app_token(fetch_user_arg=FetchUserArg(fetch_from=WhereisUserArg.QUERY, required=True))
     def delete(self, app_model: App, end_user: EndUser):
         """Delete all conversations and upload_files for the current end-user."""
         deleted_conversations, failed_conversation_ids = ConversationService.delete_all_for_user(
