@@ -634,7 +634,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 0
+        assert result == (0, [])
         delete_mock.assert_not_called()
 
     def test_delete_all_for_user_deletes_multiple_conversations(
@@ -654,7 +654,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 2
+        assert result == (2, [])
         assert delete_mock.call_count == 2
         assert {call.args[1] for call in delete_mock.call_args_list} == {CONVERSATION_ID, OTHER_CONVERSATION_ID}
 
@@ -675,7 +675,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 1
+        assert result == (1, [])
         assert delete_mock.call_count == 1
         assert delete_mock.call_args.args[1] == CONVERSATION_ID
 
@@ -696,7 +696,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 1
+        assert result == (1, [])
         assert delete_mock.call_count == 1
         assert delete_mock.call_args.args[1] == CONVERSATION_ID
 
@@ -714,7 +714,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 0
+        assert result == (0, [])
         delete_mock.assert_not_called()
 
     def test_delete_all_for_user_soft_deletes_and_enqueues_cleanup(
@@ -735,7 +735,7 @@ class TestConversationServiceDeleteAllForUser:
 
         result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
 
-        assert result == 2
+        assert result == (2, [])
         assert delete_related.call_count == 2
         assert {call_args.args[0] for call_args in delete_related.call_args_list} == {
             CONVERSATION_ID,
@@ -745,6 +745,38 @@ class TestConversationServiceDeleteAllForUser:
         assert persisted_ids == {CONVERSATION_ID, OTHER_CONVERSATION_ID}
         for row in sqlite_session.query(Conversation).all():
             assert row.is_deleted is True
+
+    def test_delete_all_for_user_partial_failure(
+        self, sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_model = ConversationServiceTestDataFactory.create_app()
+        user = _end_user()
+        sqlite_session.add_all(
+            [
+                _end_user_conversation(conversation_id=CONVERSATION_ID),
+                _end_user_conversation(conversation_id=OTHER_CONVERSATION_ID),
+            ]
+        )
+        sqlite_session.commit()
+
+        def _flaky_delete(_app_model, conversation_id, _user, *, session):
+            if conversation_id == CONVERSATION_ID:
+                raise RuntimeError("dangling workspace binding")
+            conversation = session.get(Conversation, conversation_id)
+            conversation.is_deleted = True
+            session.commit()
+
+        delete_mock = MagicMock(side_effect=_flaky_delete)
+        monkeypatch.setattr(ConversationService, "delete", delete_mock)
+
+        result = ConversationService.delete_all_for_user(app_model, user, session=sqlite_session)
+
+        assert result == (1, [CONVERSATION_ID])
+        persisted_ids = {row.id for row in sqlite_session.query(Conversation).all()}
+        assert {row.id: row.is_deleted for row in sqlite_session.query(Conversation).all()} == {
+            CONVERSATION_ID: False,
+            OTHER_CONVERSATION_ID: True,
+        }
 
 
 class TestConversationServiceHelpers:

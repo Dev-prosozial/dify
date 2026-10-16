@@ -25,6 +25,7 @@ from core.app.entities.app_invoke_entities import InvokeFrom
 from models.enums import ConversationFromSource, EndUserType
 from models.model import App, AppMode, EndUser
 from services import conversation_service
+from services.conversation_service import ConversationService
 from tests.unit_tests.model_factories import make_conversation
 
 
@@ -143,12 +144,14 @@ class TestUserDataDeletionSummary:
         summary = UserDataDeletionSummary(
             deleted_conversations=7,
             deleted_upload_files=2,
+            failed_conversation_ids=["conv-bad"],
             failed_upload_file_ids=["b7e6a2a1-1234-4a5b-9c8d-0f1e2d3c4b5a"],
         )
         payload = summary.model_dump(mode="json")
         assert payload == {
             "deleted_conversations": 7,
             "deleted_upload_files": 2,
+            "failed_conversation_ids": ["conv-bad"],
             "failed_upload_file_ids": ["b7e6a2a1-1234-4a5b-9c8d-0f1e2d3c4b5a"],
         }
 
@@ -157,6 +160,7 @@ class TestUserDataDeletionSummary:
         assert payload == {
             "deleted_conversations": 0,
             "deleted_upload_files": 0,
+            "failed_conversation_ids": [],
             "failed_upload_file_ids": [],
         }
 
@@ -230,6 +234,7 @@ class TestUserDataApiDelete:
         assert result == {
             "deleted_conversations": 2,
             "deleted_upload_files": 3,
+            "failed_conversation_ids": [],
             "failed_upload_file_ids": ["b7e6a2a1-1234-4a5b-9c8d-0f1e2d3c4b5a"],
         }
 
@@ -258,7 +263,12 @@ class TestUserDataApiDelete:
         with app.test_request_context("/user-data", method="DELETE"):
             result = handler(api, app_model=app_model, end_user=end_user)
 
-        assert result == {"deleted_conversations": 0, "deleted_upload_files": 0, "failed_upload_file_ids": []}
+        assert result == {
+            "deleted_conversations": 0,
+            "deleted_upload_files": 0,
+            "failed_conversation_ids": [],
+            "failed_upload_file_ids": [],
+        }
 
     def test_delete_is_isolated_by_app(
         self,
@@ -300,6 +310,43 @@ class TestUserDataApiDelete:
 
         assert result["deleted_conversations"] == 0
         assert result["deleted_upload_files"] == 0
+
+    def test_delete_reports_failed_conversation_ids(
+        self,
+        app: Flask,
+        monkeypatch: pytest.MonkeyPatch,
+        sqlite_engine: Engine,
+    ) -> None:
+        app_model = _app()
+        end_user = _end_user()
+
+        user_data_module = sys.modules["controllers.service_api.app.user_data"]
+        session_factory = sessionmaker(bind=sqlite_engine, expire_on_commit=False)
+        monkeypatch.setattr(
+            user_data_module,
+            "db",
+            SimpleNamespace(session=lambda: session_factory()),
+        )
+        monkeypatch.setattr(
+            ConversationService,
+            "delete_all_for_user",
+            MagicMock(return_value=(1, ["conv-bad"])),
+        )
+        fake_files = SimpleNamespace(delete_files_by_user=lambda **_kwargs: (0, []))
+        monkeypatch.setattr(user_data_module, "application_services", lambda: SimpleNamespace(files=fake_files))
+
+        api = UserDataApi()
+        handler = unwrap(api.delete)
+
+        with app.test_request_context("/user-data", method="DELETE"):
+            result = handler(api, app_model=app_model, end_user=end_user)
+
+        assert result == {
+            "deleted_conversations": 1,
+            "deleted_upload_files": 0,
+            "failed_conversation_ids": ["conv-bad"],
+            "failed_upload_file_ids": [],
+        }
 
     def test_get_is_isolated_by_app(
         self,

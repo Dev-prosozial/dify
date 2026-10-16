@@ -21,6 +21,7 @@ class UserDataCounts(ResponseModel):
 class UserDataDeletionSummary(ResponseModel):
     deleted_conversations: int
     deleted_upload_files: int
+    failed_conversation_ids: list[str] = []
     failed_upload_file_ids: list[str] = []
 
 
@@ -93,7 +94,7 @@ class UserDataApi(Resource):
     @validate_app_token(fetch_user_arg=FetchUserArg(fetch_from=WhereisUserArg.JSON, required=True))
     def delete(self, app_model: App, end_user: EndUser):
         """Delete all conversations and upload_files for the current end-user."""
-        deleted_conversations = ConversationService.delete_all_for_user(
+        deleted_conversations, failed_conversation_ids = ConversationService.delete_all_for_user(
             app_model,
             end_user,
             session=db.session(),
@@ -106,5 +107,6 @@ class UserDataApi(Resource):
         return UserDataDeletionSummary(
             deleted_conversations=deleted_conversations,
             deleted_upload_files=deleted_upload_files,
+            failed_conversation_ids=failed_conversation_ids,
             failed_upload_file_ids=failed_upload_file_ids,
         ).model_dump(mode="json")

@@ -121,20 +121,23 @@ class ConversationService:
         return session.scalar(count_stmt) or 0
 
     @classmethod
-    def delete_all_for_user(cls, app_model: App, user: Account | EndUser, *, session: Session) -> int:
+    def delete_all_for_user(
+        cls, app_model: App, user: Account | EndUser, *, session: Session
+    ) -> tuple[int, list[str]]:
         """Soft-delete every conversation owned by a user in the given app.
 
-        Reuses the exact ownership predicate of `count_for_user` (which deliberately omits the
-        `invoke_from` filter used by `pagination_by_last_id`), so the number counted and the number
-        actually deleted are guaranteed to match. Each conversation is soft-deleted through the
-        existing `delete`, which retires agent workspaces and enqueues async cleanup. Candidates are
-        selected in batches; because each delete flips `is_deleted` to True, the next batch query
-        automatically skips them, so no cursor is required.
+        Mirrors `FileService.delete_files_by_user`'s failure handling: a conversation that fails to
+        delete (e.g. `AgentWorkspaceNotFoundError` from a dangling workspace binding) is logged and
+        recorded, without aborting the rest of the batch or the upload-file deletion that follows in
+        the controller. `cls.delete` already rolls back its own failed attempt internally, so the
+        session stays usable for the next iteration.
 
         Returns:
-            The number of conversations soft-deleted.
+            A tuple of (number of conversations soft-deleted, ids that failed to delete).
         """
         deleted_count = 0
+        failed_ids: list[str] = []
+        seen_failed: set[str] = set()
         while True:
             stmt = (
                 select(Conversation.id)
@@ -150,10 +153,21 @@ class ConversationService:
             conversation_ids = list(session.scalars(stmt).all())
             if not conversation_ids:
                 break
+            batch_progress = False
             for conversation_id in conversation_ids:
-                cls.delete(app_model, conversation_id, user, session=session)
-                deleted_count += 1
-        return deleted_count
+                if conversation_id in seen_failed:
+                    continue
+                try:
+                    cls.delete(app_model, conversation_id, user, session=session)
+                    deleted_count += 1
+                    batch_progress = True
+                except Exception:
+                    logger.exception("Failed to delete conversation %s", conversation_id)
+                    failed_ids.append(conversation_id)
+                    seen_failed.add(conversation_id)
+            if not batch_progress:
+                break
+        return deleted_count, failed_ids
 
     @classmethod
     def _get_sort_params(cls, sort_by: str):
